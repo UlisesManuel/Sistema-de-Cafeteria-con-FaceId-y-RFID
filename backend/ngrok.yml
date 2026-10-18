@@ -1,0 +1,11 @@
+version: "3"
+agent:
+  authtoken: 3KjkmTtn8Lix3AfY2XpJuaaUwCr_6ujp8r3s5xc3HsZDhRGAf
+endpoints:
+  - name: frontend
+    url: https://chaplain-recollect-hydroxide.ngrok-free.dev
+    upstream:
+      url: 5173
+  - name: backend
+    upstream:
+      url: 8000
