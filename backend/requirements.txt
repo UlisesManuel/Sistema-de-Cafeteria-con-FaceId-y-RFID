@@ -1,1 +1,6 @@
-Fastapi
+fastapi
+uvicorn
+opencv-python
+numpy
+face_recognition
+git+https://github.com/ageitgey/face_recognition_models
