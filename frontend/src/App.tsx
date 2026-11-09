@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import './App.css';
 
 interface CoordenadaRostro {
@@ -7,7 +7,6 @@ interface CoordenadaRostro {
   bottom: number;
   left: number;
 }
-
 interface RespuestaAPI {
   status: string;
   rostros_encontrados: number;
@@ -16,6 +15,15 @@ interface RespuestaAPI {
 }
 
 function App() {
+  // ================= ESTADOS RFID (MOCK) =================
+  const [rfidStatus, setRfidStatus] = useState<'waiting' | 'success' | 'error'>('waiting');
+
+  const simulateRfidScan = (status: 'success' | 'error') => {
+    setRfidStatus(status);
+    setTimeout(() => setRfidStatus('waiting'), 3000); 
+  };
+
+  // ================= ESTADOS FACESCAN =================
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   
@@ -23,12 +31,13 @@ function App() {
   const [rostros, setRostros] = useState<number>(0);
   const [identidadDetectada, setIdentidadDetectada] = useState<string>("Esperando escaneo...");
 
+  // Inicializar cámara
   useEffect(() => {
     navigator.mediaDevices.getUserMedia({ video: true })
       .then((stream) => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          setMensaje("Sistema de Acceso Activo. Colócate frente a la cámara.");
+          setMensaje("Sistema Activo. Colócate frente a la cámara.");
         }
       })
       .catch((err) => {
@@ -37,6 +46,7 @@ function App() {
       });
   }, []);
 
+  // Función de captura y envío a API
   const capturarYValidar = async (): Promise<void> => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -56,7 +66,7 @@ function App() {
       const formData = new FormData();
       formData.append("file", blob, "captura.jpg");
 
-      setMensaje("Validando identidad en el almacén...");
+      setMensaje("Validando identidad en el servidor...");
 
       try {
         const response = await fetch("http://localhost:8000/api/detectar-rostro/", {
@@ -82,59 +92,80 @@ function App() {
     }, 'image/jpeg');
   };
 
-  // Validar si fue reconocido exitosamente para cambiar estilos del cartel
-  const esReconocido = identidadDetectada.includes("¡Bienvenido");
+  const esReconocido = identidadDetectada.includes("¡Bienvenido") || identidadDetectada.includes("Bienvenido");
 
   return (
-    <div style={{ textAlign: 'center', fontFamily: 'sans-serif', marginTop: '30px' }}>
-      <h1>Control de Acceso por Reconocimiento Facial</h1>
-      <p><b>Estado del Sistema:</b> {mensaje}</p>
+    <div className="app-container">
+      {/* ENCABEZADO UNSIS */}
+      <header className="app-header">
+        <h1>Sistema de Cafetería - UNSIS</h1>
+        <p>Verificación de Acceso mediante FaceScan y RFID</p>
+      </header>
 
-      {/* Cartel de Bienvenida Dinámico */}
-      <div style={{ 
-        margin: '20px auto', 
-        padding: '20px', 
-        width: '500px', 
-        borderRadius: '12px', 
-        backgroundColor: esReconocido ? '#DEF7EC' : '#FDE8E8',
-        color: esReconocido ? '#03543F' : '#9B1C1C',
-        fontSize: '20px',
-        fontWeight: 'bold',
-        border: `2px solid ${esReconocido ? '#31C48D' : '#F8B4B4'}`,
-        boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
-      }}>
-        {identidadDetectada}
-      </div>
+      <main className="main-content">
+        
+        {/* ================= COLUMNA IZQUIERDA: Lector RFID ================= */}
+        <section className="split-panel">
+          <h2>Verificación RFID</h2>
+          
+          <div className={`status-box ${rfidStatus}`}>
+            {rfidStatus === 'waiting' && (
+              <>
+                <div className="icon pulse"></div>
+                <p>Acerque su credencial al lector.</p>
+              </>
+            )}
+            {rfidStatus === 'success' && (
+              <>
+                <div className="icon success"></div>
+                <p>¡Verificación exitosa!<br/>Acceso autorizado.</p>
+              </>
+            )}
+            {rfidStatus === 'error' && (
+              <>
+                <div className="icon error"></div>
+                <p>Credencial no reconocida o sin saldo.<br/>Intente de nuevo.</p>
+              </>
+            )}
+          </div>
+          
+          {/* Controles Mock Temporales */}
+          <div className="mock-controls">
+            <p className="mock-title">Controles de Simulación (Mock)</p>
+            <button onClick={() => simulateRfidScan('success')} className="btn-success">Simular Éxito</button>
+            <button onClick={() => simulateRfidScan('error')} className="btn-error">Simular Error</button>
+          </div>
+        </section>
 
-      <div style={{ margin: '20px auto', display: 'inline-block', position: 'relative' }}>
-        <video 
-          ref={videoRef} 
-          autoPlay 
-          playsInline 
-          style={{ width: '640px', borderRadius: '8px', border: '2px solid #ccc' }} 
-        />
-      </div>
+        {/* ================= COLUMNA DERECHA: FaceScan ================= */}
+        <section className="split-panel">
+          <h2>Reconocimiento Facial</h2>
+          
+          <p className="system-status"><b>Estado:</b> {mensaje}</p>
 
-      <div>
-        <button 
-          onClick={capturarYValidar}
-          style={{ 
-            padding: '12px 25px', 
-            fontSize: '18px', 
-            backgroundColor: '#4F46E5', 
-            color: 'white', 
-            border: 'none', 
-            borderRadius: '6px', 
-            cursor: 'pointer',
-            fontWeight: 'bold'
-          }}
-        >
-          Validar mi Identidad
-        </button>
-      </div>
+          {/* Cartel de Bienvenida Dinámico */}
+          <div className={`face-alert ${esReconocido ? 'alert-success' : 'alert-waiting'}`}>
+            {identidadDetectada}
+          </div>
 
-      {/* Canvas corregido */}
-      <canvas ref={canvasRef} style={{ display: 'none' }} />
+          <div className="video-container">
+            <video 
+              ref={videoRef} 
+              autoPlay 
+              playsInline 
+              className="video-feed"
+            />
+          </div>
+
+          <button onClick={capturarYValidar} className="btn-validate">
+            Validar mi Identidad
+          </button>
+
+          {/* Canvas oculto para procesar la imagen */}
+          <canvas ref={canvasRef} style={{ display: 'none' }} />
+        </section>
+
+      </main>
     </div>
   );
 }
