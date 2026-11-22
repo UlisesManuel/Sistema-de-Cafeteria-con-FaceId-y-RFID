@@ -1,171 +1,283 @@
-import { useRef, useState, useEffect } from 'react';
+
+import { useEffect, useRef, useState, useCallback } from 'react';
 import './App.css';
 
-interface CoordenadaRostro {
-  top: number;
-  right: number;
-  bottom: number;
-  left: number;
-}
-interface RespuestaAPI {
-  status: string;
-  rostros_encontrados: number;
-  identidad?: string;
-  coordenadas: CoordenadaRostro[];
-}
+// Layout
+import { AttendanceHeader } from './components/layout/attendance-header';
+import { AttendanceFooter } from './components/layout/attendance-footer';
+
+// Attendance
+import { useRfid } from './features/attendance/hooks/use-rfid';
+import { RfidPanel } from './features/attendance/components/rfid-panel';
+import { FacialPanel } from './features/attendance/components/panel-facial';
+import { AttendanceAlert } from './features/attendance/components/attendance-alert';
+import { AttendanceResult } from './features/attendance/components/attendance-result';
+
+// Types
+import type {
+  AttendanceStatus,
+  RfidStatus,
+  RespuestaAPI,
+} from './features/attendance/types/attendance.types';
 
 function App() {
-  // ================= ESTADOS RFID (MOCK) =================
-  const [rfidStatus, setRfidStatus] = useState<'waiting' | 'success' | 'error'>('waiting');
-
-  const simulateRfidScan = (status: 'success' | 'error') => {
-    setRfidStatus(status);
-    setTimeout(() => setRfidStatus('waiting'), 3000); 
-  };
-
-  // ================= ESTADOS FACESCAN =================
+  // Referencias de cámara y canvas
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  
-  const [mensaje, setMensaje] = useState<string>("Cámara inactiva");
-  const [rostros, setRostros] = useState<number>(0);
-  const [identidadDetectada, setIdentidadDetectada] = useState<string>("Esperando escaneo...");
+
+  // Estado RFID
+  const [rfidStatus, setRfidStatus] = useState<RfidStatus>('waiting');
+  const [rfidUid, setRfidUid] = useState('');
+
+  // Estado general de asistencia
+  const [attendanceStatus, setAttendanceStatus] =
+    useState<AttendanceStatus>('WAITING_RFID');
+
+  // Estado de cámara
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraMessage, setCameraMessage] = useState(
+    'Inicializando cámara...'
+  );
+
+  // Resultado de reconocimiento facial
+  const [identityMessage, setIdentityMessage] = useState('');
+  const [rostros, setRostros] = useState(0);
+
+  // Procesar lectura RFID
+  const handleRfidRead = useCallback((uid: string) => {
+    // Evitar procesar otra tarjeta durante una validación
+    if (attendanceStatus !== 'WAITING_RFID') return;
+
+    setRfidUid(uid);
+    setRfidStatus('success');
+
+    setIdentityMessage('');
+    setRostros(0);
+
+    // Por ahora aceptamos la lectura para continuar
+    // Posteriormente validaremos el UID mediante FastAPI.
+    setAttendanceStatus('WAITING_FACE');
+
+    console.log('UID RFID recibido:', uid);
+  }, [attendanceStatus]);
+
+  // Hook de lectura RFID
+  const {
+    uid,
+    handleChange,
+    clearReading,
+  } = useRfid({
+    onRead: handleRfidRead,
+    delay: 150,
+    expectedLength: 10,
+  });
 
   // Inicializar cámara
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ video: true })
-      .then((stream) => {
+    let stream: MediaStream | null = null;
+    let mounted = true;
+
+    const initializeCamera = async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error('El navegador no permite acceder a la cámara.');
+        }
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            facingMode: 'user',
+          },
+          audio: false,
+        });
+
+        if (!mounted) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          setMensaje("Sistema Activo. Colócate frente a la cámara.");
         }
-      })
-      .catch((err) => {
-        console.error("Error al acceder a la cámara:", err);
-        setMensaje("No se pudo acceder a la cámara.");
-      });
+
+        setCameraReady(true);
+        setCameraMessage('Sistema activo. Colócate frente a la cámara.');
+      } catch (error) {
+        console.error('Error al acceder a la cámara:', error);
+
+        if (mounted) {
+          setCameraReady(false);
+          setCameraMessage('No se pudo acceder a la cámara.');
+        }
+      }
+    };
+
+    initializeCamera();
+
+    return () => {
+      mounted = false;
+      stream?.getTracks().forEach((track) => track.stop());
+    };
   }, []);
 
-  // Función de captura y envío a API
-  const capturarYValidar = async (): Promise<void> => {
+  // Reiniciar proceso
+  const resetAttendance = () => {
+    clearReading();
+
+    setRfidUid('');
+    setRfidStatus('waiting');
+    setAttendanceStatus('WAITING_RFID');
+
+    setIdentityMessage('');
+    setRostros(0);
+  };
+
+  // Capturar imagen y enviarla al backend
+  const captureAndValidate = async (): Promise<void> => {
+    if (attendanceStatus !== 'WAITING_FACE') return;
+
     const video = videoRef.current;
     const canvas = canvasRef.current;
 
-    if (!video || !canvas) return;
+    if (!video || !canvas || !cameraReady) {
+      setAttendanceStatus('REJECTED');
+      setIdentityMessage('La cámara no está disponible.');
+      return;
+    }
+
+    if (!video.videoWidth || !video.videoHeight) {
+      setAttendanceStatus('REJECTED');
+      setIdentityMessage(
+        'La cámara todavía no está lista. Intenta nuevamente.'
+      );
+      return;
+    }
+
+    const context = canvas.getContext('2d');
+
+    if (!context) {
+      setAttendanceStatus('REJECTED');
+      setIdentityMessage('No se pudo procesar la imagen de la cámara.');
+      return;
+    }
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
 
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    canvas.toBlob(async (blob) => {
-      if (!blob) return;
+    setAttendanceStatus('VERIFYING_FACE');
+    setIdentityMessage('Estamos verificando tu identidad...');
+    setCameraMessage('Enviando captura al servidor...');
+
+    try {
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (result) => {
+            if (result) {
+              resolve(result);
+            } else {
+              reject(new Error('No se pudo generar la captura.'));
+            }
+          },
+          'image/jpeg',
+          0.9
+        );
+      });
 
       const formData = new FormData();
-      formData.append("file", blob, "captura.jpg");
+      formData.append('file', blob, 'captura.jpg');
 
-      setMensaje("Validando identidad en el servidor...");
-
-      try {
-        const response = await fetch("http://localhost:8000/api/detectar-rostro/", {
-          method: "POST",
+      const response = await fetch(
+        'http://localhost:8000/api/detectar-rostro/',
+        {
+          method: 'POST',
           body: formData,
-        });
-
-        const data: RespuestaAPI = await response.json();
-
-        if (response.ok) {
-          setRostros(data.rostros_encontrados);
-          if (data.identidad) {
-            setIdentidadDetectada(data.identidad);
-          }
-          setMensaje("Escaneo completado.");
-        } else {
-          setMensaje("Error en el servidor.");
         }
-      } catch (error) {
-        console.error("Error de red:", error);
-        setMensaje("Error de conexión con el backend.");
-      }
-    }, 'image/jpeg');
-  };
+      );
 
-  const esReconocido = identidadDetectada.includes("¡Bienvenido") || identidadDetectada.includes("Bienvenido");
+      const data: RespuestaAPI = await response.json();
+
+      if (!response.ok) {
+        throw new Error('El servidor rechazó la solicitud.');
+      }
+
+      setRostros(data.rostros_encontrados);
+
+      const recognized =
+        data.identidad?.includes('Bienvenido') ?? false;
+
+      if (recognized) {
+        setAttendanceStatus('SUCCESS');
+        setIdentityMessage(
+          data.identidad ?? 'Identidad verificada.'
+        );
+        setCameraMessage('Reconocimiento facial completado.');
+      } else {
+        setAttendanceStatus('REJECTED');
+        setIdentityMessage(
+          data.identidad || 'No se pudo reconocer tu identidad.'
+        );
+        setCameraMessage('No se pudo verificar la identidad.');
+      }
+    } catch (error) {
+      console.error('Error durante el reconocimiento facial:', error);
+
+      setAttendanceStatus('REJECTED');
+
+      setIdentityMessage(
+        error instanceof Error
+          ? error.message === 'Failed to fetch'
+            ? 'No fue posible conectar con el servidor de reconocimiento facial.'
+            : error.message
+          : 'Ocurrió un error durante la validación.'
+      );
+
+      setCameraMessage('Error durante la comunicación con el servidor.');
+    }
+  };
 
   return (
     <div className="app-container">
-      {/* ENCABEZADO UNSIS */}
-      <header className="app-header">
-        <h1>Sistema de Cafetería - UNSIS</h1>
-        <p>Verificación de Acceso mediante FaceScan y RFID</p>
-      </header>
+      <AttendanceHeader />
 
       <main className="main-content">
-        
-        {/* ================= COLUMNA IZQUIERDA: Lector RFID ================= */}
-        <section className="split-panel">
-          <h2>Verificación RFID</h2>
-          
-          <div className={`status-box ${rfidStatus}`}>
-            {rfidStatus === 'waiting' && (
-              <>
-                <div className="icon pulse"></div>
-                <p>Acerque su credencial al lector.</p>
-              </>
-            )}
-            {rfidStatus === 'success' && (
-              <>
-                <div className="icon success"></div>
-                <p>¡Verificación exitosa!<br/>Acceso autorizado.</p>
-              </>
-            )}
-            {rfidStatus === 'error' && (
-              <>
-                <div className="icon error"></div>
-                <p>Credencial no reconocida o sin saldo.<br/>Intente de nuevo.</p>
-              </>
-            )}
-          </div>
-          
-          {/* Controles Mock Temporales */}
-          <div className="mock-controls">
-            <p className="mock-title">Controles de Simulación (Mock)</p>
-            <button onClick={() => simulateRfidScan('success')} className="btn-success">Simular Éxito</button>
-            <button onClick={() => simulateRfidScan('error')} className="btn-error">Simular Error</button>
-          </div>
-        </section>
+        <div className="verification-grid">
+          <RfidPanel
+            status={rfidStatus}
+            uid={uid}
+            onChange={handleChange}
+          />
 
-        {/* ================= COLUMNA DERECHA: FaceScan ================= */}
-        <section className="split-panel">
-          <h2>Reconocimiento Facial</h2>
-          
-          <p className="system-status"><b>Estado:</b> {mensaje}</p>
+          <FacialPanel
+            status={attendanceStatus}
+            cameraReady={cameraReady}
+            cameraMessage={cameraMessage}
+            rostros={rostros}
+            identityMessage={identityMessage}
+            videoRef={videoRef}
+            canvasRef={canvasRef}
+            onValidate={captureAndValidate}
+          />
+        </div>
 
-          {/* Cartel de Bienvenida Dinámico */}
-          <div className={`face-alert ${esReconocido ? 'alert-success' : 'alert-waiting'}`}>
-            {identidadDetectada}
-          </div>
+        {attendanceStatus === 'REJECTED' && (
+          <AttendanceAlert
+            message={identityMessage}
+            onRetry={resetAttendance}
+          />
+        )}
 
-          <div className="video-container">
-            <video 
-              ref={videoRef} 
-              autoPlay 
-              playsInline 
-              className="video-feed"
-            />
-          </div>
-
-          <button onClick={capturarYValidar} className="btn-validate">
-            Validar mi Identidad
-          </button>
-
-          {/* Canvas oculto para procesar la imagen */}
-          <canvas ref={canvasRef} style={{ display: 'none' }} />
-        </section>
-
+        {attendanceStatus === 'SUCCESS' && (
+          <AttendanceResult
+            message={identityMessage}
+            onReset={resetAttendance}
+          />
+        )}
       </main>
+
+      <AttendanceFooter />
     </div>
   );
 }
