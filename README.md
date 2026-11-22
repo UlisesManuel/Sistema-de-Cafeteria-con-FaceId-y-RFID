@@ -170,4 +170,3 @@ backend/
 │   └── face_data/
 │
 ├── requirements.txt
-└── ngrok.yml   
